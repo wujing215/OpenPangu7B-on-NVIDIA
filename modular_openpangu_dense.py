@@ -24,10 +24,12 @@ from typing import Callable, Optional, Tuple
 import torch
 from torch import nn
 
-import torch_npu
-from torch_npu.contrib import transfer_to_npu
-if "910" in torch.npu.get_device_name():
-    NPU_ATTN_INFR = True
+# import torch_npu
+# from torch_npu.contrib import transfer_to_npu
+# if "910" in torch.npu.get_device_name():
+if False:  # NPU disabled for CUDA
+    # NPU_ATTN_INFR = True
+    NPU_ATTN_INFR = False
     print("[INFO] torch_npu detected. Using NPU fused infer attention.")
 else:
     NPU_ATTN_INFR = False
