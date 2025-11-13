@@ -3,7 +3,11 @@
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-model_local_path = "path_to_openPangu-Embedded-7B"
+from pathlib import Path
+
+# model_local_path = "path_to_openPangu-Embedded-7B"
+#model_local_path = "~/work/openPangu-Embedded-7B-V1.1/"
+model_local_path = Path("~/work/openPangu-Embedded-7B-V1.1").expanduser().resolve()
 
 
 # load the tokenizer and the model
@@ -18,7 +22,8 @@ model = AutoModelForCausalLM.from_pretrained(
     model_local_path,
     trust_remote_code=True,
     torch_dtype="auto",
-    device_map="npu",
+    #device_map="npu",
+    device_map="cuda",
     local_files_only=True
 )
 
