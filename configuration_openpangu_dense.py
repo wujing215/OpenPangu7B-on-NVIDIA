@@ -32,6 +32,11 @@ class PanguEmbeddedConfig(PretrainedConfig):
         tie_word_embeddings=False,
         rope_theta=16000000.0,
         bias=True,
+        #---- 新增 Medusa 相关参数
+        medusa_num_heads=5,
+        medusa_num_layers=1,
+        base_model_name_or_path="lmsys/vicuna-7b-v1.3",
+        #---- 新增 Medusa 相关参数
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -54,3 +59,7 @@ class PanguEmbeddedConfig(PretrainedConfig):
             tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
+        # 新增 Medusa 相关
+        self.medusa_num_heads = medusa_num_heads
+        self.medusa_num_layers = medusa_num_layers
+        self.base_model_name_or_path = base_model_name_or_path
