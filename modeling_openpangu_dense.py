@@ -246,7 +246,14 @@ class PanguEmbeddedAttention(nn.Module):
         if past_key_value is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
             cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            # [MODIFIED] Support Medusa KV Cache
+            # key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            if isinstance(past_key_value, Cache):
+                key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            else:
+                # Medusa custom cache
+                key_states = past_key_value[0].cat(key_states, dim=2)
+                value_states = past_key_value[1].cat(value_states, dim=2)
 
         attention_interface: Callable = eager_attention_forward
         if self.config._attn_implementation != "eager":
@@ -418,8 +425,11 @@ class PanguEmbeddedModel(PanguEmbeddedPreTrainedModel):
             use_cache = False
 
         # TODO (joao): remove this exception in v4.56 -- it exists for users that try to pass a legacy cache
-        if not isinstance(past_key_values, (type(None), Cache)):
-            raise ValueError("The `past_key_values` should be either a `Cache` object or `None`.")
+        # [MODIFIED] Allow list/tuple for Medusa
+        # if not isinstance(past_key_values, (type(None), Cache)):
+        #     raise ValueError("The `past_key_values` should be either a `Cache` object or `None`.")
+        if not isinstance(past_key_values, (type(None), Cache, list, tuple)):
+            raise ValueError("The `past_key_values` should be either a `Cache` object, `None`, or a list/tuple (Medusa).")
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
@@ -428,7 +438,15 @@ class PanguEmbeddedModel(PanguEmbeddedPreTrainedModel):
             past_key_values = DynamicCache()
 
         if cache_position is None:
-            past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            # [MODIFIED] Support Medusa KV Cache length
+            # past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
+            if isinstance(past_key_values, Cache):
+                past_seen_tokens = past_key_values.get_seq_length()
+            elif isinstance(past_key_values, (list, tuple)) and len(past_key_values) > 0:
+                past_seen_tokens = past_key_values[0][0].current_length.item()
+            else:
+                past_seen_tokens = 0 if past_key_values is None else 0 # Fallback
+
             cache_position = torch.arange(
                 past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
             )
@@ -441,9 +459,24 @@ class PanguEmbeddedModel(PanguEmbeddedPreTrainedModel):
             input_embeds=inputs_embeds,
             attention_mask=attention_mask,
             cache_position=cache_position,
-            past_key_values=past_key_values,
+            # [MODIFIED] Pass None if not Cache object to avoid errors in create_causal_mask
+            # past_key_values=past_key_values,
+            past_key_values=past_key_values if isinstance(past_key_values, Cache) else None,
             position_ids=position_ids,
         )
+
+        # [MODIFIED] Add medusa mask
+        if hasattr(self, "medusa_mask") and self.medusa_mask is not None:
+            medusa_mask = self.medusa_mask
+            medusa_len = medusa_mask.size(-1)
+            if causal_mask is not None:
+                causal_mask[:, :, -medusa_len:, -medusa_len:][
+                    medusa_mask == 0
+                ] = torch.finfo(causal_mask.dtype).min
+        
+        # [MODIFIED] Save for Medusa
+        self.attention_mask = causal_mask
+        self.position_ids = position_ids
 
         hidden_states = inputs_embeds
 
@@ -454,15 +487,24 @@ class PanguEmbeddedModel(PanguEmbeddedPreTrainedModel):
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
 
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        # [MODIFIED] Enumerate to get layer index for Medusa KV cache
+        # for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        for i, decoder_layer in enumerate(self.layers[: self.config.num_hidden_layers]):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
+
+            # [MODIFIED] Select correct past_key_value for the layer
+            if isinstance(past_key_values, (list, tuple)):
+                layer_past = past_key_values[i]
+            else:
+                layer_past = past_key_values
 
             layer_outputs = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask,
                 position_ids=position_ids,
-                past_key_value=past_key_values,
+                # past_key_value=past_key_values,
+                past_key_value=layer_past,
                 output_attentions=output_attentions,
                 use_cache=use_cache,
                 cache_position=cache_position,

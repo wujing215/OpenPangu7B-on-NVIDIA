@@ -6,7 +6,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from pathlib import Path
 
 # model_local_path = "path_to_openPangu-Embedded-7B"
-#model_local_path = "~/work/openPangu-Embedded-7B-V1.1/"
 model_local_path = Path("~/work/openPangu-Embedded-7B-V1.1").expanduser().resolve()
 
 
