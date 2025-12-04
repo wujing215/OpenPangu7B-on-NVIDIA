@@ -55,17 +55,35 @@ class MedusaPanguInference:
         self.dtype = dtype
         self.medusa_num_heads = medusa_num_heads
         
-        # 解析路径
-        base_model_path = str(Path(base_model_path).expanduser().resolve())
-        medusa_head_path = str(Path(medusa_head_path).expanduser().resolve())
-        tokenizer_path = tokenizer_path or os.path.dirname(medusa_head_path)
+        # 判断是本地路径还是 HuggingFace repo ID
+        def is_local_path(path):
+            """检查是否是本地路径（而非 HF repo ID）"""
+            # 如果包含路径分隔符且以 . 或 / 开头，或者路径存在，则是本地路径
+            return (
+                path.startswith('.') or 
+                path.startswith('/') or 
+                path.startswith('~') or
+                os.path.exists(path)
+            )
+        
+        # 只对本地路径进行解析，HF repo ID 保持原样
+        if is_local_path(base_model_path):
+            base_model_path = str(Path(base_model_path).expanduser().resolve())
+            local_files_only = True
+        else:
+            local_files_only = False
+            
+        if is_local_path(medusa_head_path):
+            medusa_head_path = str(Path(medusa_head_path).expanduser().resolve())
+        
+        tokenizer_path = tokenizer_path or (os.path.dirname(medusa_head_path) if is_local_path(medusa_head_path) else medusa_head_path)
         
         print(f"Loading tokenizer from {tokenizer_path}...")
         self.tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path,
             use_fast=False,
             trust_remote_code=True,
-            local_files_only=True,
+            local_files_only=local_files_only if is_local_path(tokenizer_path) else False,
         )
         
         # 加载基础模型配置并添加 Medusa 参数
@@ -88,21 +106,38 @@ class MedusaPanguInference:
             torch_dtype=dtype,
             device_map=device,
             trust_remote_code=True,
-            local_files_only=True,
+            local_files_only=local_files_only,
         )
         
         # 加载训练好的 Medusa heads 权重
         print(f"Loading Medusa heads from {medusa_head_path}...")
-        if medusa_head_path.endswith('.safetensors'):
-            medusa_state_dict = load_file(medusa_head_path)
-        elif medusa_head_path.endswith('.pt'):
-            medusa_state_dict = torch.load(medusa_head_path, map_location='cpu')
-        else:
-            # 尝试两种格式
-            if os.path.exists(medusa_head_path + '.safetensors'):
-                medusa_state_dict = load_file(medusa_head_path + '.safetensors')
+        
+        # 判断是本地文件还是 HF repo
+        if is_local_path(medusa_head_path):
+            # 本地文件
+            if medusa_head_path.endswith('.safetensors'):
+                medusa_state_dict = load_file(medusa_head_path)
+            elif medusa_head_path.endswith('.pt'):
+                medusa_state_dict = torch.load(medusa_head_path, map_location='cpu')
             else:
-                medusa_state_dict = torch.load(medusa_head_path + '.pt', map_location='cpu')
+                # 尝试两种格式
+                safetensors_path = os.path.join(medusa_head_path, 'medusa_lm_head.safetensors')
+                pt_path = os.path.join(medusa_head_path, 'medusa_lm_head.pt')
+                if os.path.exists(safetensors_path):
+                    medusa_state_dict = load_file(safetensors_path)
+                elif os.path.exists(pt_path):
+                    medusa_state_dict = torch.load(pt_path, map_location='cpu')
+                else:
+                    raise FileNotFoundError(f"Cannot find medusa_lm_head.safetensors or .pt in {medusa_head_path}")
+        else:
+            # HF repo - 下载文件
+            from huggingface_hub import hf_hub_download
+            try:
+                local_path = hf_hub_download(repo_id=medusa_head_path, filename="medusa_lm_head.safetensors")
+                medusa_state_dict = load_file(local_path)
+            except:
+                local_path = hf_hub_download(repo_id=medusa_head_path, filename="medusa_lm_head.pt")
+                medusa_state_dict = torch.load(local_path, map_location='cpu')
         
         self.model.medusa_head.load_state_dict(medusa_state_dict, strict=False)
         self.model.eval()
