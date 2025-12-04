@@ -1,0 +1,11 @@
+# Medusa training outputs (keep config but ignore large files)
+test_medusa_mlp*/**/checkpoint-*
+test_medusa_mlp*/**/*.safetensors
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs and process files
+*.log
+*.pid

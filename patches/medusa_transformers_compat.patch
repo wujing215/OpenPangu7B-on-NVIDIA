@@ -1,0 +1,43 @@
+diff --git a/medusa/model/modeling_llama_kv.py b/medusa/model/modeling_llama_kv.py
+--- a/medusa/model/modeling_llama_kv.py
++++ b/medusa/model/modeling_llama_kv.py
+@@ -27,7 +27,16 @@ from transformers.utils import (
+     replace_return_docstrings,
+ )
+ from transformers.models.llama.configuration_llama import LlamaConfig
+-from transformers.utils import is_flash_attn_available
++
++# [MODIFIED] Handle different transformers versions for flash attention check
++try:
++    from transformers.utils import is_flash_attn_available
++except ImportError:
++    try:
++        from transformers.utils.import_utils import is_flash_attn_available
++    except ImportError:
++        def is_flash_attn_available():
++            return False
+ 
+ if is_flash_attn_available():
+     from flash_attn import flash_attn_func, flash_attn_varlen_func
+
+diff --git a/medusa/model/modeling_mistral_kv.py b/medusa/model/modeling_mistral_kv.py
+--- a/medusa/model/modeling_mistral_kv.py
++++ b/medusa/model/modeling_mistral_kv.py
+@@ -27,7 +27,16 @@ from transformers.utils import (
+     replace_return_docstrings,
+ )
+ from transformers.models.mistral.configuration_mistral import MistralConfig
+-from transformers.utils import is_flash_attn_available
++
++# [MODIFIED] Handle different transformers versions for flash attention check
++try:
++    from transformers.utils import is_flash_attn_available
++except ImportError:
++    try:
++        from transformers.utils.import_utils import is_flash_attn_available
++    except ImportError:
++        def is_flash_attn_available():
++            return False
+ 
+ if is_flash_attn_available():
+     from flash_attn import flash_attn_func, flash_attn_varlen_func

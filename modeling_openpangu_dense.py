@@ -440,42 +440,73 @@ class PanguEmbeddedModel(PanguEmbeddedPreTrainedModel):
         if use_cache and past_key_values is None:
             past_key_values = DynamicCache()
 
+        # [MODIFIED] Support Medusa: When position_ids is provided, use it directly for cache_position
+        # This is needed for Medusa tree decoding where position_ids are custom (non-contiguous)
         if cache_position is None:
-            # [MODIFIED] Support Medusa KV Cache length
-            # past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
-            if isinstance(past_key_values, Cache):
-                past_seen_tokens = past_key_values.get_seq_length()
-            elif isinstance(past_key_values, (list, tuple)) and len(past_key_values) > 0:
-                past_seen_tokens = past_key_values[0][0].current_length.item()
+            if position_ids is not None:
+                # For Medusa: position_ids is provided, derive cache_position from it
+                # Use the first row if position_ids is 2D
+                cache_position = position_ids[0] if position_ids.dim() > 1 else position_ids
             else:
-                past_seen_tokens = 0 if past_key_values is None else 0 # Fallback
+                # Standard case: compute from past_key_values length
+                # [MODIFIED] Support Medusa KV Cache length
+                if isinstance(past_key_values, Cache):
+                    past_seen_tokens = past_key_values.get_seq_length()
+                elif isinstance(past_key_values, (list, tuple)) and len(past_key_values) > 0:
+                    past_seen_tokens = past_key_values[0][0].current_length.item()
+                else:
+                    past_seen_tokens = 0 if past_key_values is None else 0 # Fallback
 
-            cache_position = torch.arange(
-                past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
-            )
+                cache_position = torch.arange(
+                    past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
+                )
 
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        causal_mask = create_causal_mask(
-            config=self.config,
-            input_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-            cache_position=cache_position,
-            # [MODIFIED] Pass None if not Cache object to avoid errors in create_causal_mask
-            # past_key_values=past_key_values,
-            past_key_values=past_key_values if isinstance(past_key_values, Cache) else None,
-            position_ids=position_ids,
-        )
+        # [MODIFIED] For Medusa: check if using custom KV cache and compute past_seen_tokens
+        past_seen_tokens_for_mask = 0
+        if isinstance(past_key_values, (list, tuple)) and len(past_key_values) > 0:
+            past_seen_tokens_for_mask = past_key_values[0][0].current_length.item()
 
-        # [MODIFIED] Add medusa mask
-        if hasattr(self, "medusa_mask") and self.medusa_mask is not None:
+        # [MODIFIED] For Medusa with custom KV cache, we need to create a custom attention mask
+        # that accounts for past tokens
+        if past_seen_tokens_for_mask > 0 and hasattr(self, "medusa_mask") and self.medusa_mask is not None:
+            # Medusa tree decoding: create custom causal mask
+            seq_len = inputs_embeds.shape[1]
+            total_len = past_seen_tokens_for_mask + seq_len
+            
+            # Start with causal mask: new tokens can see all past tokens
+            # Shape: [1, 1, seq_len, total_len]
+            causal_mask = torch.zeros((1, 1, seq_len, total_len), dtype=torch.bool, device=inputs_embeds.device)
+            
+            # All query positions can attend to all past key positions
+            causal_mask[:, :, :, :past_seen_tokens_for_mask] = True
+            
+            # For the new tokens (tree candidates), apply medusa_mask
             medusa_mask = self.medusa_mask
             medusa_len = medusa_mask.size(-1)
-            if causal_mask is not None:
-                causal_mask[:, :, -medusa_len:, -medusa_len:][
-                    medusa_mask == 0
-                ] = torch.finfo(causal_mask.dtype).min
+            
+            # medusa_mask is [1, 1, medusa_len, medusa_len], apply it to the new token region
+            if seq_len == medusa_len:
+                causal_mask[:, :, :, past_seen_tokens_for_mask:] = (medusa_mask != 0)
+            else:
+                # Fallback: use simple causal mask for new tokens
+                for i in range(seq_len):
+                    for j in range(seq_len):
+                        if i >= j:  # causal: can only attend to past and current
+                            causal_mask[:, :, i, past_seen_tokens_for_mask + j] = True
+        else:
+            # Standard case: use create_causal_mask
+            causal_mask = create_causal_mask(
+                config=self.config,
+                input_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                cache_position=cache_position,
+                # [MODIFIED] Pass None if not Cache object to avoid errors in create_causal_mask
+                past_key_values=past_key_values if isinstance(past_key_values, Cache) else None,
+                position_ids=position_ids,
+            )
         
         # [MODIFIED] Save for Medusa
         self.attention_mask = causal_mask

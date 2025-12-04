@@ -3,11 +3,10 @@ import torch.nn as nn
 import sys
 import os
 
-# 添加 third_party/Medusa 到 Python 路径
+# 使用兼容层初始化 Medusa（处理 transformers 版本兼容性）
 _current_dir = os.path.dirname(os.path.abspath(__file__))
-_medusa_path = os.path.join(_current_dir, "third_party", "Medusa")
-if _medusa_path not in sys.path:
-    sys.path.insert(0, _medusa_path)
+sys.path.insert(0, _current_dir)
+import medusa_compat  # 必须在导入 medusa 之前
 
 # 从 third_party/Medusa 导入 Llama 和 Mistral 的 KV 版本
 from medusa.model.modeling_llama_kv import LlamaForCausalLM as KVLlamaForCausalLM
@@ -118,7 +117,8 @@ class MedusaModelABC(nn.Module):
         self.medusa = medusa_num_heads
         self.medusa_num_layers = medusa_num_layers
         self.base_model_name_or_path = base_model_name_or_path
-        self.tokenizer = AutoTokenizer.from_pretrained(self.base_model_name_or_path)
+        # Tokenizer will be set later in from_pretrained or by the user
+        self.tokenizer = None
         # Create a list of Medusa heads
         self.medusa_head = nn.ModuleList(
             [
@@ -140,18 +140,35 @@ class MedusaModelABC(nn.Module):
         *args,
         **kwargs,
     ):
+        # 如果已经传入了 config，直接使用它，否则尝试加载
+        if 'config' in kwargs and kwargs['config'] is not None:
+            # 直接使用传入的 config，调用父类的 from_pretrained
+            return super().from_pretrained(
+                pretrained_model_name_or_path,
+                *args,
+                **kwargs,
+            )
+        
         # Manually load config to ensure that the medusa_num_heads parameter is loaded
+        trust_remote_code = kwargs.get('trust_remote_code', False)
         try:
-            config = AutoConfig.from_pretrained(pretrained_model_name_or_path)
+            config = AutoConfig.from_pretrained(
+                pretrained_model_name_or_path, 
+                trust_remote_code=trust_remote_code
+            )
             return super().from_pretrained(
                 pretrained_model_name_or_path,
                 *args,
                 **kwargs,
                 config=config,
             )
-        except:
+        except Exception as e:
+            print(f"AutoConfig loading failed: {e}, trying MedusaConfig...")
             config = MedusaConfig.from_pretrained(pretrained_model_name_or_path)
-            base_model_config = AutoConfig.from_pretrained(config.base_model_name_or_path)
+            base_model_config = AutoConfig.from_pretrained(
+                config.base_model_name_or_path,
+                trust_remote_code=trust_remote_code
+            )
             base_model_config.medusa_num_heads = 5 # TODO: fix the uploaded config (only include 2 heads)
             base_model_config.medusa_num_layers = config.medusa_num_layers
             model = super().from_pretrained(
@@ -211,6 +228,11 @@ class MedusaModelABC(nn.Module):
                 position_ids=position_ids,
                 **kwargs,
             )
+        
+        # [MODIFIED] Ensure position_ids is 2D [batch, seq_len] as expected by Pangu model
+        if position_ids is not None and position_ids.dim() == 1:
+            position_ids = position_ids.unsqueeze(0)
+        
         with torch.inference_mode():
             # Pass input through the base model
             # 基础模型前向传播
